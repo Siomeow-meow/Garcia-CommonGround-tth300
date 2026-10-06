@@ -1,20 +1,16 @@
-/**
- * Frontend-only image "upload" — converts a File or existing data/URL
- * string to a base64 data URL kept entirely in the browser. No network
- * call, no storage bucket.
- */
+import { uploadFile } from "./api";
+
 export async function uploadImage(
   fileOrDataUrl: File | string,
   _bucket = "images",
   _folder = "uploads",
 ): Promise<string> {
   if (typeof fileOrDataUrl === "string") {
-    return fileOrDataUrl;
+    if (!fileOrDataUrl.startsWith("data:")) return fileOrDataUrl;
+    const response = await fetch(fileOrDataUrl);
+    const blob = await response.blob();
+    const extension = blob.type.split("/")[1] || "png";
+    return uploadFile(new File([blob], `upload.${extension}`, { type: blob.type }));
   }
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error ?? new Error("Failed to read file"));
-    reader.readAsDataURL(fileOrDataUrl);
-  });
+  return uploadFile(fileOrDataUrl);
 }

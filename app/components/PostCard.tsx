@@ -15,8 +15,10 @@ import { useAuth } from "@clerk/nextjs";
 import { getUser } from "../lib/user";
 import User from "../types/user";
 import { getDisplayIdentity } from "@/app/lib/anonymity";
+import { getSavedPostStatus, setSavedPost } from "@/app/lib/saved";
 
-function timeAgo(date: Date | string) {
+function timeAgo(date: Date | string) {
+
   const seconds = Math.floor((Date.now() - new Date(date).getTime()) / 1000);
   if (seconds < 60) return "just now";
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
@@ -61,20 +63,6 @@ function updateCommentInTree(
       return { ...c, replies: updateCommentInTree(c.replies || [], id, updater) };
     })
     .filter((c): c is Comment => c !== null);
-}
-
-function getSavedIds(userId: string): Set<number> {
-  try {
-    const raw = localStorage.getItem(`saved_posts_${userId}`);
-    return raw ? new Set(JSON.parse(raw)) : new Set();
-  } catch {
-    return new Set();
-  }
-}
-function setSavedIds(userId: string, ids: Set<number>) {
-  try {
-    localStorage.setItem(`saved_posts_${userId}`, JSON.stringify([...ids]));
-  } catch {}
 }
 
 // ── Share modal ───────────────────────────────────────────────────────────────
@@ -1249,7 +1237,15 @@ export default function PostCard({
 
   useEffect(() => {
     if (!userId) return;
-    setSaved(getSavedIds(userId).has(post.id));
+    let cancelled = false;
+    getSavedPostStatus(post.id)
+      .then(({ isSaved }) => {
+        if (!cancelled) setSaved(isSaved);
+      })
+      .catch((error) => console.error(error));
+    return () => {
+      cancelled = true;
+    };
   }, [userId, post.id]);
 
   // Comment count previously only became accurate once the user opened the
@@ -1301,13 +1297,16 @@ export default function PostCard({
     }
   }
 
-  function handleSave() {
+  async function handleSave() {
     if (!userId) return;
-    const ids = getSavedIds(userId);
-    if (saved) ids.delete(post.id);
-    else ids.add(post.id);
-    setSavedIds(userId, ids);
-    setSaved(!saved);
+    const next = !saved;
+    setSaved(next);
+    try {
+      await setSavedPost(post.id, next);
+    } catch (error) {
+      setSaved(!next);
+      console.error(error);
+    }
   }
 
   // Action button style

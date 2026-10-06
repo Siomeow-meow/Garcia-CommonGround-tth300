@@ -1,154 +1,138 @@
 "use client";
-/**
- * Local, frontend-only stand-in for authentication.
- *
- * This app has no backend, so there is no real login. Instead, "signing in"
- * just means picking one of the seeded demo users (or creating a new local
- * one) and remembering that choice in localStorage. Every piece of code
- * that used to call Clerk's useAuth()/useUser() keeps working unchanged —
- * this module is aliased in tsconfig.json to stand in for "@clerk/nextjs".
- */
+
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { db, type LocalUser } from "./db";
+import { apiRequest } from "./api";
 
-const CURRENT_USER_KEY = "cg:currentUserId";
-
-export type MockUser = {
+type User = {
   id: string;
-  username: string | null;
-  firstName: string | null;
-  lastName: string | null;
+  email: string;
+  userName: string;
+  profileImg: string;
+  fName: string;
+  lName: string;
+};
+
+type AuthUser = {
+  id: string;
+  username: string;
+  firstName: string;
+  lastName: string;
   imageUrl: string;
   emailAddresses: { emailAddress: string }[];
 };
 
-function toMockUser(u: LocalUser): MockUser {
+function toAuthUser(user: User): AuthUser {
   return {
-    id: u.id,
-    username: u.userName,
-    firstName: u.fName,
-    lastName: u.lName,
-    imageUrl: u.profileImg,
-    emailAddresses: [{ emailAddress: u.email }],
+    id: user.id,
+    username: user.userName,
+    firstName: user.fName,
+    lastName: user.lName,
+    imageUrl: user.profileImg,
+    emailAddresses: [{ emailAddress: user.email }],
   };
 }
 
-type AuthCtx = {
+type AuthContextValue = {
   userId: string | null;
   isLoaded: boolean;
   isSignedIn: boolean;
-  user: MockUser | null;
+  user: AuthUser | null;
   getToken: () => Promise<string>;
   signOut: () => Promise<void>;
-  signIn: (userId: string) => void;
-  createLocalUser: (input: { userName: string; fName: string; lName: string; email: string; profileImg?: string }) => string;
+  setAuthenticatedUser: (user: User | null) => void;
 };
 
-const Ctx = createContext<AuthCtx | null>(null);
+const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function ClerkProvider({ children }: { children: React.ReactNode }) {
-  const [userId, setUserId] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
 
   useEffect(() => {
-    db.seedIfNeeded();
-    let id: string | null = null;
-    try {
-      id = localStorage.getItem(CURRENT_USER_KEY);
-    } catch {}
-    setUserId(id);
-    setIsLoaded(true);
-  }, []);
-
-  const signIn = useCallback((id: string) => {
-    try {
-      localStorage.setItem(CURRENT_USER_KEY, id);
-    } catch {}
-    setUserId(id);
+    let active = true;
+    apiRequest<{ user: User | null }>("auth.me")
+      .then(({ user }) => {
+        if (active) setCurrentUser(user);
+      })
+      .catch(() => {
+        if (active) setCurrentUser(null);
+      })
+      .finally(() => {
+        if (active) setIsLoaded(true);
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   const signOut = useCallback(async () => {
     try {
-      localStorage.removeItem(CURRENT_USER_KEY);
-    } catch {}
-    setUserId(null);
+      await apiRequest<{ success: boolean }>("auth.logout", { method: "POST", body: {} });
+    } finally {
+      setCurrentUser(null);
+    }
   }, []);
 
-  const createLocalUser = useCallback(
-    (input: { userName: string; fName: string; lName: string; email: string; profileImg?: string }) => {
-      const newUser = db.createUser(input);
-      signIn(newUser.id);
-      return newUser.id;
-    },
-    [signIn],
+  const value = useMemo<AuthContextValue>(
+    () => ({
+      userId: currentUser?.id ?? null,
+      isLoaded,
+      isSignedIn: currentUser !== null,
+      user: currentUser ? toAuthUser(currentUser) : null,
+      getToken: async () => "",
+      signOut,
+      setAuthenticatedUser: setCurrentUser,
+    }),
+    [currentUser, isLoaded, signOut],
   );
 
-  const user = useMemo(() => {
-    if (!userId) return null;
-    const u = db.getUserById(userId);
-    return u ? toMockUser(u) : null;
-  }, [userId]);
-
-  const getToken = useCallback(async () => "local-mock-token", []);
-
-  const value: AuthCtx = {
-    userId,
-    isLoaded,
-    isSignedIn: !!userId,
-    user,
-    getToken,
-    signOut,
-    signIn,
-    createLocalUser,
-  };
-
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
-function useCtx(): AuthCtx {
-  const ctx = useContext(Ctx);
-  if (!ctx) {
-    throw new Error("useAuth/useUser must be used within <ClerkProvider>");
-  }
-  return ctx;
+function useAuthContext() {
+  const context = useContext(AuthContext);
+  if (!context) throw new Error("Authentication hooks must be used within <ClerkProvider>");
+  return context;
 }
 
 export function useAuth() {
-  const { userId, isLoaded, isSignedIn, getToken, signOut } = useCtx();
+  const { userId, isLoaded, isSignedIn, getToken, signOut } = useAuthContext();
   return { userId, isLoaded, isSignedIn, getToken, signOut };
 }
 
 export function useUser() {
-  const { user, isLoaded, isSignedIn } = useCtx();
+  const { user, isLoaded, isSignedIn } = useAuthContext();
   return { user, isLoaded, isSignedIn };
 }
 
-export function useLocalAuthActions() {
-  const { signIn, createLocalUser } = useCtx();
-  return { signIn, createLocalUser };
-}
-
-/** Minimal stand-ins for the <SignIn/> and <SignUp/> Clerk components. */
 export function SignIn(_props: { forceRedirectUrl?: string }) {
-  return <LocalAuthScreen mode="sign-in" />;
+  return <AccountForm mode="sign-in" />;
 }
+
 export function SignUp(_props: { forceRedirectUrl?: string }) {
-  return <LocalAuthScreen mode="sign-up" />;
+  return <AccountForm mode="sign-up" />;
 }
 
-function LocalAuthScreen({ mode }: { mode: "sign-in" | "sign-up" }) {
-  const { signIn, createLocalUser } = useLocalAuthActions();
-  const [users, setUsers] = useState<LocalUser[]>([]);
-  const [tab, setTab] = useState<"existing" | "new">(mode === "sign-up" ? "new" : "existing");
-  const [form, setForm] = useState({ userName: "", fName: "", lName: "", email: "" });
+function AccountForm({ mode }: { mode: "sign-in" | "sign-up" }) {
+  const { setAuthenticatedUser } = useAuthContext();
+  const [form, setForm] = useState({ email: "", password: "", userName: "", fName: "", lName: "" });
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
-    db.seedIfNeeded();
-    setUsers(db.getUsers());
-  }, []);
-
-  function goHome() {
-    if (typeof window !== "undefined") window.location.href = "/";
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setSubmitting(true);
+    try {
+      const action = mode === "sign-in" ? "auth.login" : "auth.register";
+      const result = await apiRequest<{ user: User }>(action, { body: form });
+      setAuthenticatedUser(result.user);
+      window.location.assign("/");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to sign in right now.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -157,104 +141,71 @@ function LocalAuthScreen({ mode }: { mode: "sign-in" | "sign-up" }) {
         {mode === "sign-in" ? "Sign in" : "Create an account"}
       </h1>
       <p className="text-xs mb-4" style={{ color: "var(--fg-muted)" }}>
-        This is a frontend-only demo — no real accounts. Pick a demo profile
-        or create a new local one; everything is saved in your browser.
+        {mode === "sign-in" ? "Use your CommonGround account." : "Create your CommonGround account."}
       </p>
-
-      <div className="flex gap-2 mb-4 text-xs">
-        <button
-          onClick={() => setTab("existing")}
-          className={`px-3 py-1.5 rounded-full border ${tab === "existing" ? "font-semibold" : ""}`}
-          style={{ borderColor: "var(--border)", background: tab === "existing" ? "var(--accent)" : "transparent", color: tab === "existing" ? "white" : "var(--fg)" }}
-        >
-          Use a demo profile
-        </button>
-        <button
-          onClick={() => setTab("new")}
-          className={`px-3 py-1.5 rounded-full border ${tab === "new" ? "font-semibold" : ""}`}
-          style={{ borderColor: "var(--border)", background: tab === "new" ? "var(--accent)" : "transparent", color: tab === "new" ? "white" : "var(--fg)" }}
-        >
-          Create new
-        </button>
-      </div>
-
-      {tab === "existing" ? (
-        <div className="flex flex-col gap-2 max-h-72 overflow-y-auto">
-          {users.map((u) => (
-            <button
-              key={u.id}
-              onClick={() => {
-                signIn(u.id);
-                goHome();
-              }}
-              className="flex items-center gap-3 p-2 rounded-lg border text-left hover:opacity-80"
-              style={{ borderColor: "var(--border)" }}
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={u.profileImg} alt="" className="w-9 h-9 rounded-full object-cover" />
-              <div>
-                <div className="text-sm font-medium">{u.fName} {u.lName}</div>
-                <div className="text-xs" style={{ color: "var(--fg-muted)" }}>@{u.userName}</div>
-              </div>
-            </button>
-          ))}
-        </div>
-      ) : (
-        <form
-          className="flex flex-col gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!form.userName.trim()) return;
-            createLocalUser({
-              userName: form.userName.trim(),
-              fName: form.fName.trim() || form.userName.trim(),
-              lName: form.lName.trim(),
-              email: form.email.trim() || `${form.userName.trim()}@example.com`,
-            });
-            goHome();
-          }}
-        >
-          <input
-            placeholder="Username"
-            value={form.userName}
-            onChange={(e) => setForm((f) => ({ ...f, userName: e.target.value }))}
-            className="px-3 py-2 rounded-lg border text-sm bg-transparent"
-            style={{ borderColor: "var(--border)" }}
-            required
-          />
-          <div className="flex gap-2">
+      <form className="flex flex-col gap-2" onSubmit={submit}>
+        {mode === "sign-up" && (
+          <>
             <input
-              placeholder="First name"
-              value={form.fName}
-              onChange={(e) => setForm((f) => ({ ...f, fName: e.target.value }))}
-              className="px-3 py-2 rounded-lg border text-sm bg-transparent flex-1"
+              autoComplete="username"
+              placeholder="Username"
+              value={form.userName}
+              onChange={(event) => setForm((value) => ({ ...value, userName: event.target.value }))}
+              className="px-3 py-2 rounded-lg border text-sm bg-transparent"
               style={{ borderColor: "var(--border)" }}
+              required
             />
-            <input
-              placeholder="Last name"
-              value={form.lName}
-              onChange={(e) => setForm((f) => ({ ...f, lName: e.target.value }))}
-              className="px-3 py-2 rounded-lg border text-sm bg-transparent flex-1"
-              style={{ borderColor: "var(--border)" }}
-            />
-          </div>
-          <input
-            placeholder="Email (optional)"
-            value={form.email}
-            onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-            className="px-3 py-2 rounded-lg border text-sm bg-transparent"
-            style={{ borderColor: "var(--border)" }}
-            type="email"
-          />
-          <button
-            type="submit"
-            className="mt-2 px-3 py-2 rounded-lg text-sm font-semibold text-white"
-            style={{ background: "var(--accent)" }}
-          >
-            Create account &amp; continue
-          </button>
-        </form>
-      )}
+            <div className="flex gap-2">
+              <input
+                autoComplete="given-name"
+                placeholder="First name"
+                value={form.fName}
+                onChange={(event) => setForm((value) => ({ ...value, fName: event.target.value }))}
+                className="px-3 py-2 rounded-lg border text-sm bg-transparent flex-1"
+                style={{ borderColor: "var(--border)" }}
+              />
+              <input
+                autoComplete="family-name"
+                placeholder="Last name"
+                value={form.lName}
+                onChange={(event) => setForm((value) => ({ ...value, lName: event.target.value }))}
+                className="px-3 py-2 rounded-lg border text-sm bg-transparent flex-1"
+                style={{ borderColor: "var(--border)" }}
+              />
+            </div>
+          </>
+        )}
+        <input
+          autoComplete="email"
+          placeholder="Email"
+          value={form.email}
+          onChange={(event) => setForm((value) => ({ ...value, email: event.target.value }))}
+          className="px-3 py-2 rounded-lg border text-sm bg-transparent"
+          style={{ borderColor: "var(--border)" }}
+          type="email"
+          required
+        />
+        <input
+          autoComplete={mode === "sign-in" ? "current-password" : "new-password"}
+          placeholder="Password"
+          value={form.password}
+          onChange={(event) => setForm((value) => ({ ...value, password: event.target.value }))}
+          className="px-3 py-2 rounded-lg border text-sm bg-transparent"
+          style={{ borderColor: "var(--border)" }}
+          type="password"
+          minLength={mode === "sign-up" ? 8 : undefined}
+          required
+        />
+        {error && <p className="text-sm text-red-500" role="alert">{error}</p>}
+        <button
+          type="submit"
+          disabled={submitting}
+          className="mt-2 px-3 py-2 rounded-lg text-sm font-semibold text-white disabled:opacity-60"
+          style={{ background: "var(--accent)" }}
+        >
+          {submitting ? "Please wait..." : mode === "sign-in" ? "Sign in" : "Create account"}
+        </button>
+      </form>
     </div>
   );
 }
